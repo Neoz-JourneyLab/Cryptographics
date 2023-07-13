@@ -41,10 +41,14 @@ namespace TCP_Dialog {
 		}
 
 		void SetSendEnabled() {
-			inputField.ReadOnly = !form.users.Any(x => x.nick == comboBox1.Text);
-			inputField.ForeColor = inputField.ReadOnly ? Color.DarkGray : Color.White;
-			sendMessage.Enabled = inputField.Text.Length > 0 && changed;
-			sendFile.Enabled = !inputField.ReadOnly;
+			try {
+				inputField.ReadOnly = !form.users.Any(x => x.nick == comboBox1.Text);
+				inputField.ForeColor = inputField.ReadOnly ? Color.DarkGray : Color.White;
+				sendMessage.Enabled = inputField.Text.Length > 0 && changed;
+				sendFile.Enabled = !inputField.ReadOnly;
+			} catch {
+				//ignored
+			}
 		}
 
 		private void button1_Click(object sender, EventArgs e) {
