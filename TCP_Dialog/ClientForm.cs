@@ -8,6 +8,7 @@ using Org.BouncyCastle.X509;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
+using System.Windows.Forms;
 using TCP_Crypto;
 using User = TCP_Crypto.User;
 
@@ -16,12 +17,14 @@ namespace TCP_Dialog {
 
 		private TcpClient? tcpClient = null;
 		private Thread? clientThread = null;
-		readonly RSACryptoServiceProvider rsa = new RSACryptoServiceProvider();
 		readonly AsymmetricCipherKeyPair rsa2;
 		public List<User> users = new List<User>();
 		static readonly string animals = "Chat;Chien;Lion;Tigre;Éléphant;Girafe;Gorille;Singe;Zèbre;Hippopotame;Rhinocéros;Ours;Loup;Renard;Lapin;Kangourou;Koala;Panda;Crocodile;Alligator;Serpent;Tortue;Dauphin;Baleine;Requin;Épaulard;Orque;Poisson;Perroquet;Aigle;Hibou;Canard;Oie;Pingouin;Flamant rose;Paon;Autruche;Toucan;Grenouille;Crapaud;Salamandre;Gecko;Araignée;Scorpion;Libellule;Papillon;Abeille;Fourmi;Guêpe;Coccinelle;Ara;Gazelle;Chameau;Lama;Oryx;Gnou;Phacochère;Hyène;Ane;Cheval;Mouton;Vache;Cochon;Poulet;Canari;Pigeon;Corbeau;Mouette;Écureuil;Castor;Opossum;Koala;Chauve-souris;Raton laveur;Loutre;Écureuil volant;Tatou;Antilope;Gazelle;Babouin;Porc-épic;Panthère;Léopard;Puma;Jaguar;Lézard;Iguane;Baleine à bosse;Étoile de mer;Méduse;Crabe;Homard;Bernache du Canada;Ours polaire;Renne;Léopard des neiges;Lama;Dromadaire;Ocelot;Dingo";
 		static readonly string colors = "Rouge;Bleu;Vert;Jaune;Rose;Violet;Orange;Noir;Blanc;Gris;Marron;Beige;Turquoise;Bleu marine;Saumon;Indigo;Émeraude;Citron vert;Fuchsia;Cramoisi;Cyan;Sable;Doré;Argenté;Pourpre;Olive;Corail;Lavande;Teal;Azur;Bronze;Mauve;Sarcelle;Brun clair;Pêche;Rouille;Gris anthracite;Chartreuse;Terracotta;Bordeaux;Rose bonbon;Or;Chocolat;Aigue-marine;Vert olive;Lilas;Menthe;Jaune pâle;Noir de jais;Ciel;Corail;Brun chocolat;Ambre;Magenta;Perle;Vert émeraude;Pervenche;Citrouille;Roux;Indigo foncé;Rose poudré;Améthyste;Vert forêt;Gris perle;Corail rose;Safran;Vert menthe;Gris souris;Vanille;Mordoré;Rouge cerise;Vert lime;Sauge;Olive foncé;Ivoire;Bleu cobalt;Cannelle;Gris foncé;Jaune vif;Vert pomme;Turquoise clair;Bleu ciel;Vert citron;Abricot;Gris clair;Aubergine;Vert pin;Saumon foncé;Prune;Bleu nuit;Caramel;Bleu royal;Sienne;Bleu ardoise;Fauve;Vert jade;Roux foncé;Gris ardoise;Bronze;Bleu turquoise";
 		static string code_de_synchro = "3dbc60e1-1143-4122-ba56-f6fc6c224156";
+		byte[] public_server_rsa;
+		byte[] vpn_aes = new byte[0];
+		byte[] vpn_iv = new byte[0];
 
 		public ClientForm() {
 			InitializeComponent();
@@ -79,11 +82,18 @@ namespace TCP_Dialog {
 				// Convertir les données en tableau d'octets
 				byte[] bin = Encoding.UTF8.GetBytes(data);
 
-				byte[] xor = SHA256.Create().ComputeHash(Encoding.UTF8.GetBytes(code_de_synchro));
-				Aes local = Aes.Create();
-				local.Key = xor;
-				local.IV = SHA256.Create().ComputeHash(xor).Take(local.IV.Length).ToArray();
-				bin = local.EncryptCfb(bin, local.IV);
+				if (vpn_aes.Length != 0) {
+					Aes local = Aes.Create();
+					local.Key = vpn_aes;
+					local.IV = vpn_iv;
+					bin = local.EncryptCfb(bin, local.IV);
+				} else {
+					byte[] xor = SHA256.Create().ComputeHash(Encoding.UTF8.GetBytes(code_de_synchro));
+					Aes local = Aes.Create();
+					local.Key = xor;
+					local.IV = SHA256.Create().ComputeHash(xor).Take(local.IV.Length).ToArray();
+					bin = local.EncryptCfb(bin, local.IV);
+				}
 
 				int dataSize = bin.Length;
 				byte[] dataSizeBytes = BitConverter.GetBytes(dataSize);
@@ -139,11 +149,16 @@ namespace TCP_Dialog {
 									label2.Visible = false;
 								});
 
-								byte[] bin = data.Skip(4).Take(expectedDataSize).ToArray();
-								byte[] xor = SHA256.Create().ComputeHash(Encoding.UTF8.GetBytes(code_de_synchro));
 								Aes local = Aes.Create();
-								local.Key = xor;
-								local.IV = SHA256.Create().ComputeHash(xor).Take(local.IV.Length).ToArray();
+								byte[] bin = data.Skip(4).Take(expectedDataSize).ToArray();
+								if (vpn_iv.Length != 0) {
+									local.Key = vpn_aes;
+									local.IV = vpn_iv;
+								} else {
+									byte[] xor = SHA256.Create().ComputeHash(Encoding.UTF8.GetBytes(code_de_synchro));
+									local.Key = xor;
+									local.IV = SHA256.Create().ComputeHash(xor).Take(local.IV.Length).ToArray();
+								}
 								bin = local.DecryptCfb(bin, local.IV);
 
 								ProcessDataPacket(Encoding.UTF8.GetString(bin));
@@ -181,11 +196,16 @@ namespace TCP_Dialog {
 				});
 			}
 		}
+
+		bool connected = false;
 		private void ProcessDataPacket(string data) {
-			if (data == "hello world") {
+			if (data.StartsWith("hello world")) {
 				Invoke((MethodInvoker)delegate {
-					RegisterBT.Enabled = true;
+					RegisterBT.Enabled = nickTB.Text.Length > 3;
 				});
+				public_server_rsa = Convert.FromBase64String(data.Split(';')[1]);
+				output_field.AppendText("Connecté au serveur ! (clé publique serveur : " + BitConverter.ToString(SHA256.Create().ComputeHash(public_server_rsa)).Substring(0, 11) + ")", Color.LightGreen);
+				connected = true;
 				//tcpClient.Close();
 				return;
 			}
@@ -210,13 +230,13 @@ namespace TCP_Dialog {
 						auth = true;
 						Invoke((MethodInvoker)delegate {
 							send_BT.Enabled = auth && users.Count > 0;
-							output_field.AppendText("Connecté au serveur !", Color.Lime);
+							output_field.AppendText("Identifié au serveur !", Color.Lime);
 							nickTB.ReadOnly = true;
 							RegisterBT.Visible = false;
 						});
 						break;
 					}
-					users.Add(new User() { nick = (string)json["nick"]!, public_RSA = (string)json["public_RSA"]!, public_RSA2= (string)json["public_RSA2"]! });
+					users.Add(new User() { nick = (string)json["nick"]!, public_RSA = (string)json["public_RSA"]!, });
 					Invoke((MethodInvoker)delegate {
 						send_BT.Enabled = auth;
 						output_field.AppendText("Utilisateur en ligne : " + (string)json["nick"]!, Color.RoyalBlue);
@@ -232,15 +252,11 @@ namespace TCP_Dialog {
 					label_online.Text = users.Count + " utilisateurs en ligne.";
 					break;
 				case "new:message":
-					byte[] aes_key = rsa.Decrypt(Convert.FromBase64String((string)json["aes_key"]!), true);
-					byte[] aes_iv = rsa.Decrypt(Convert.FromBase64String((string)json["aes_IV"]!), true);
-					byte[] aes_key2 = BouncyCastle.RSA_Decrypt(Convert.FromBase64String((string)json["aes_key2"]!), rsa2.Private);
-					Aes aes = Aes.Create();
-					aes.Key = aes_key;
-					aes.IV = aes_iv;
-					string filename = Encoding.UTF8.GetString(aes.DecryptCbc(BouncyCastle.AES_Decrypt(Convert.FromBase64String((string)json["filename"]!), aes_key2), aes.IV));
-					var bin = aes.DecryptCbc(BouncyCastle.AES_Decrypt(Convert.FromBase64String((string)json["cipher"]!), aes_key2), aes.IV);
-					
+					byte[] aes_key = BouncyCastle.RSA_Decrypt(Convert.FromBase64String((string)json["aes_key"]!), rsa2.Private);
+					byte[] aes_iv = BouncyCastle.RSA_Decrypt(Convert.FromBase64String((string)json["aes_iv"]!), rsa2.Private);
+					string filename = Encoding.UTF8.GetString(BouncyCastle.AES_Decrypt(Convert.FromBase64String((string)json["filename"]!), aes_key, aes_iv));
+					var bin = BouncyCastle.AES_Decrypt(Convert.FromBase64String((string)json["cipher"]!), aes_key, aes_iv);
+
 					if (filename == "") {
 						string plain = Encoding.UTF8.GetString(bin);
 						Invoke((MethodInvoker)delegate {
@@ -274,11 +290,16 @@ namespace TCP_Dialog {
 		private void RegisterClick(object sender, EventArgs e) {
 			JObject json = new JObject();
 			json["nick"] = nickTB.Text;
-			json["public_RSA"] = Convert.ToBase64String(rsa.ExportCspBlob(false));
 			SubjectPublicKeyInfo publicKeyInfo = SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(rsa2.Public);
-			json["public_RSA2"] = Convert.ToBase64String(publicKeyInfo.GetEncoded());
+			json["public_RSA"] = Convert.ToBase64String(publicKeyInfo.GetEncoded());
+			byte[] aes = BouncyCastle.GenerateRandomBytes(32);
+			byte[] iv = BouncyCastle.GenerateRandomBytes(16);
+			json["vpn_aes"] = Convert.ToBase64String(aes);
+			json["vpn_iv"] = Convert.ToBase64String(iv);
 			Roam roam = new Roam() { route = "register", payload = JsonConvert.SerializeObject(json, Formatting.None) };
 			SendDataToServer(JsonConvert.SerializeObject(roam));
+			vpn_aes = aes;
+			vpn_iv = iv;
 		}
 
 		private void RedactClick(object sender, EventArgs e) {
@@ -295,7 +316,7 @@ namespace TCP_Dialog {
 		private void nickTB_TextChanged(object sender, EventArgs e) {
 			label1.ForeColor = ColorFromHash(SHA256.Create().ComputeHash(Encoding.UTF8.GetBytes(nickTB.Text)));
 			nickTB.ForeColor = label1.ForeColor;
-			RegisterBT.Enabled = nickTB.Text.Length > 3;
+			RegisterBT.Enabled = nickTB.Text.Length > 3 && connected;
 		}
 	}
 }

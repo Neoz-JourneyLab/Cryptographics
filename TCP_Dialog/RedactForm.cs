@@ -58,18 +58,15 @@ namespace TCP_Dialog {
 
 		void SendMessage(byte[] plain, byte[] filename) {
 			User user = form.users.First(x => x.nick == comboBox1.Text);
-			Aes aes = Aes.Create();
-			RSACryptoServiceProvider public_rsa = new();
-			byte[] aes_key2 = SHA256.Create().ComputeHash(BouncyCastle.GenerateRandomBytes(256));
-			public_rsa.ImportCspBlob(Convert.FromBase64String(user.public_RSA));
-			string encrypted = Convert.ToBase64String(BouncyCastle.AES_Encrypt(aes.EncryptCbc(plain, aes.IV), aes_key2));
+			byte[] aes_key = SHA256.Create().ComputeHash(BouncyCastle.GenerateRandomBytes(32));
+			byte[] aes_iv = SHA256.Create().ComputeHash(BouncyCastle.GenerateRandomBytes(32)).Take(16).ToArray();
+			string encrypted = Convert.ToBase64String(BouncyCastle.AES_Encrypt(plain, aes_key, aes_iv));
 
 			JObject json = new() {
-				["filename"] = Convert.ToBase64String(BouncyCastle.AES_Encrypt(aes.EncryptCbc(filename, aes.IV), aes_key2)),
+				["filename"] = Convert.ToBase64String(BouncyCastle.AES_Encrypt(filename, aes_key, aes_iv)),
 				["to"] = comboBox1.Text,
-				["aes_IV"] = Convert.ToBase64String(public_rsa.Encrypt(aes.IV, true)),
-				["aes_key"] = Convert.ToBase64String(public_rsa.Encrypt(aes.Key, true)),
-				["aes_key2"] = Convert.ToBase64String(BouncyCastle.RSA_Encrypt(aes_key2, Convert.FromBase64String(user.public_RSA2))),
+				["aes_key"] = Convert.ToBase64String(BouncyCastle.RSA_Encrypt(aes_key, Convert.FromBase64String(user.public_RSA))),
+				["aes_iv"] = Convert.ToBase64String(BouncyCastle.RSA_Encrypt(aes_iv, Convert.FromBase64String(user.public_RSA))),
 				["cipher"] = encrypted
 			};
 			Roam roam = new() { route = "send:message", payload = JsonConvert.SerializeObject(json, Formatting.None) };

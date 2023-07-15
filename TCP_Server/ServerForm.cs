@@ -1,7 +1,10 @@
-using Microsoft.VisualBasic.ApplicationServices;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using System.IO;
+using Org.BouncyCastle.Asn1.X509;
+using Org.BouncyCastle.Crypto;
+using Org.BouncyCastle.Crypto.Generators;
+using Org.BouncyCastle.Security;
+using Org.BouncyCastle.X509;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -19,12 +22,20 @@ namespace TCP_Server {
 		readonly List<User> users = new();
 		bool exit = false;
 		static string code_de_synchro = "3dbc60e1-1143-4122-ba56-f6fc6c224156";
+		readonly AsymmetricCipherKeyPair server_rsa;
+		string public_server_rsa;
 
 		public ServerForm() {
 			InitializeComponent();
 			if (File.Exists("synchro.txt")) {
 				code_de_synchro = File.ReadAllText("synchro.txt");
 			}
+			KeyGenerationParameters keyGenerationParameters = new KeyGenerationParameters(new SecureRandom(), 2048);
+			RsaKeyPairGenerator keyPairGenerator = new RsaKeyPairGenerator();
+			keyPairGenerator.Init(keyGenerationParameters);
+			server_rsa = keyPairGenerator.GenerateKeyPair();
+			SubjectPublicKeyInfo publicKeyInfo = SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(server_rsa.Public);
+			public_server_rsa = Convert.ToBase64String(publicKeyInfo.GetEncoded());
 			richTextBox1.AppendText("CODE DE SYNCHRO SERVEUR : " + BitConverter.ToString(
 	SHA256.Create().ComputeHash(Encoding.UTF8.GetBytes(code_de_synchro[..20]))).Substring(0, 20), Color.Magenta);
 			serverThread = new Thread(() => StartServer());
@@ -57,7 +68,7 @@ namespace TCP_Server {
 					Invoke((MethodInvoker)delegate {
 						richTextBox1.AppendText("Nouveau client connecté : " + id, Color.RoyalBlue);
 					});
-					SendDataToClient(client, "hello world");
+					SendDataToClient(client, null, "hello world;" + public_server_rsa);
 					clientThreads.Add(clientThread);
 				}
 			} catch (Exception ex) {
@@ -75,10 +86,9 @@ namespace TCP_Server {
 					JObject json = new() {
 						["nick"] = user.nick,
 						["public_RSA"] = user.public_RSA,
-						["public_RSA2"] = user.public_RSA2
 					};
 					Roam roam = new Roam() { route = "new:user", payload = JsonConvert.SerializeObject(json, Formatting.None) };
-					SendDataToClient(client, JsonConvert.SerializeObject(roam));
+					SendDataToClient(client, null, JsonConvert.SerializeObject(roam));
 				}
 				bool run = true;
 				// Boucle de traitement de la connexion cliente
@@ -105,10 +115,16 @@ namespace TCP_Server {
 							if (totalBytesReceived >= expectedDataSize + 4) {
 								byte[] bin = data.Skip(4).Take(expectedDataSize).ToArray();
 
-								byte[] xor = SHA256.Create().ComputeHash(Encoding.UTF8.GetBytes(code_de_synchro));
 								Aes local = Aes.Create();
-								local.Key = xor;
-								local.IV = SHA256.Create().ComputeHash(xor).Take(local.IV.Length).ToArray();
+								User? u = users.FirstOrDefault(x => x.id == id);
+								if (u != null) {
+									local.Key = u.vpn_aes;
+									local.IV = u.vpn_iv;
+								} else {
+									byte[] xor = SHA256.Create().ComputeHash(Encoding.UTF8.GetBytes(code_de_synchro));
+									local.Key = xor;
+									local.IV = SHA256.Create().ComputeHash(xor).Take(local.IV.Length).ToArray();
+								}
 								bin = local.DecryptCfb(bin, local.IV);
 
 								// All data received, process the received bytes
@@ -135,7 +151,7 @@ namespace TCP_Server {
 					};
 					Roam r = new Roam() { route = "close:user", payload = JsonConvert.SerializeObject(js, Formatting.None) };
 					foreach (var cli in clients.Where(x => x.Key != id)) {
-						SendDataToClient(cli.Value, JsonConvert.SerializeObject(r));
+						SendDataToClient(cli.Value, users.FirstOrDefault(x =>x.id == cli.Key), JsonConvert.SerializeObject(r));
 					}
 					users.Remove(u);
 				}
@@ -162,7 +178,7 @@ namespace TCP_Server {
 
 			switch (roam.route) {
 				case "register":
-					Identify((string)json["nick"]!, (string)json["public_RSA"]!, (string)json["public_RSA2"]!, clientId);
+					Identify((string)json["nick"]!, (string)json["public_RSA"]!, (string)json["vpn_aes"]!, (string)json["vpn_iv"]!,clientId);
 					break;
 				case "send:message":
 					User to = users.Find(x => x.nick == (string)json["to"]!)!;
@@ -170,46 +186,56 @@ namespace TCP_Server {
 					json["from"] = from;
 					Roam r = new Roam() { payload = JsonConvert.SerializeObject(json), route = "new:message" };
 					byte[] bin = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(r));
-					SendDataToClient(clients[to.id], JsonConvert.SerializeObject(r));
+					SendDataToClient(clients[to.id], to, JsonConvert.SerializeObject(r));
 					break;
 				default: throw new Exception("No roam found : " + roam.route);
 			}
 		}
 
-		void SendDataToClient(TcpClient client, string data) {
+		void SendDataToClient(TcpClient client, User user, string data) {
 			byte[] bin = Encoding.UTF8.GetBytes(data);
 
-			byte[] xor = SHA256.Create().ComputeHash(Encoding.UTF8.GetBytes(code_de_synchro));
 			Aes local = Aes.Create();
-			local.Key = xor;
-			local.IV = SHA256.Create().ComputeHash(xor).Take(local.IV.Length).ToArray();
+			if (user != null) {
+				local.Key = user.vpn_aes;
+				local.IV = user.vpn_iv;
+			} else {
+				byte[] xor = SHA256.Create().ComputeHash(Encoding.UTF8.GetBytes(code_de_synchro));
+				local.Key = xor;
+				local.IV = SHA256.Create().ComputeHash(xor).Take(local.IV.Length).ToArray();
+			}
 			bin = local.EncryptCfb(bin, local.IV);
-
+			
 			int dataSize = bin.Length;
 			byte[] dataSizeBytes = BitConverter.GetBytes(dataSize);
 			client.GetStream().Write(dataSizeBytes, 0, 4);
 			client.GetStream().Write(bin, 0, bin.Length);
 		}
 
-		void Identify(string nick, string public_RSA, string public_RSA2, string id) {
+		void Identify(string nick, string public_RSA, string vpn_aes, string vpn_iv, string id) {
 			if (users.Find(x => x.id == id) == null) {
-				users.Add(new User() { nick = nick, public_RSA = public_RSA, public_RSA2 = public_RSA2, id = id });
+				users.Add(new User() {
+					nick = nick,
+					public_RSA = public_RSA,
+					vpn_aes = Convert.FromBase64String(vpn_aes),
+					vpn_iv = Convert.FromBase64String(vpn_iv),
+					id = id
+				});
 			} else {
 				JObject json = new() {
 					["err"] = "Nom d'utilisateur déjà enregistré.",
 				};
 				Roam roam = new() { route = "error", payload = JsonConvert.SerializeObject(json, Formatting.None) };
-				SendDataToClient(clients[id], JsonConvert.SerializeObject(roam));
+				SendDataToClient(clients[id], null, JsonConvert.SerializeObject(roam));
 				return;
 			}
 			foreach (var client in clients) {
 				JObject json = new() {
 					["nick"] = nick,
 					["public_RSA"] = public_RSA,
-					["public_RSA2"] = public_RSA2,
 				};
 				Roam roam = new() { route = "new:user", payload = JsonConvert.SerializeObject(json, Formatting.None) };
-				SendDataToClient(client.Value, JsonConvert.SerializeObject(roam));
+				SendDataToClient(client.Value, users.FirstOrDefault(x => x.id == client.Key), JsonConvert.SerializeObject(roam));
 			}
 			Invoke((MethodInvoker)delegate {
 				richTextBox1.AppendText("Identified : " + nick + " for " + id, Color.LightBlue);

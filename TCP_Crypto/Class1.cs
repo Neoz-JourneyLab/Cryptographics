@@ -14,7 +14,8 @@ namespace TCP_Crypto {
 		public string id;
 		public string nick;
 		public string public_RSA;
-		public string public_RSA2;
+		public byte[] vpn_aes;
+		public byte[] vpn_iv;
 	}
 
 	public class Roam {
@@ -25,24 +26,9 @@ namespace TCP_Crypto {
 	public static class BouncyCastle {
 		public static byte[] GenerateRandomBytes(int length) {
 			byte[] randomBytes = new byte[length];
-			byte[] randomBytes2 = new byte[length];
-			using (RandomNumberGenerator rng = RandomNumberGenerator.Create()) {
-				rng.GetBytes(randomBytes2);
-			}
 			SecureRandom secureRandom = new();
 			secureRandom.NextBytes(randomBytes);
-
-			byte[] final = new byte[length];
-			Array.Copy(randomBytes, final, length);
-			Array.Copy(randomBytes2, final, length / 2);
-
-			if(Convert.ToBase64String(final) == Convert.ToBase64String(randomBytes2)) {
-				throw new Exception("ERROR GENERATION");
-			}
-			if (Convert.ToBase64String(randomBytes) == Convert.ToBase64String(final)) {
-				throw new Exception("ERROR GENERATION");
-			}
-			return final;
+			return randomBytes;
 		}
 
 		public static byte[] ExportPrivateKey(AsymmetricKeyParameter privateKey) {
@@ -93,21 +79,20 @@ namespace TCP_Crypto {
 			return decryptedBytes;
 		}
 
-		public static byte[] AES_Encrypt(byte[] buffer, byte[] key) {
+		public static byte[] AES_Encrypt(byte[] buffer, byte[] key, byte[] iv) {
 			IBufferedCipher cipher = CipherUtilities.GetCipher("AES/CBC/PKCS7Padding");
-			cipher.Init(true, new KeyParameter(key));
+			cipher.Init(true, new ParametersWithIV(new KeyParameter(key), iv));
 
 			byte[] ciphertextBytes = cipher.DoFinal(buffer);
 
 			return ciphertextBytes;
 		}
 
-		public static byte[] AES_Decrypt(byte[] ciphertext, byte[] key) {
+		public static byte[] AES_Decrypt(byte[] ciphertext, byte[] key, byte[] iv) {
 			IBufferedCipher cipher = CipherUtilities.GetCipher("AES/CBC/PKCS7Padding");
-			cipher.Init(false, new KeyParameter(key));
+			cipher.Init(false, new ParametersWithIV(new KeyParameter(key), iv));
 
-			byte[] ciphertextBytes = ciphertext;
-			byte[] decryptedBytes = cipher.DoFinal(ciphertextBytes);
+			byte[] decryptedBytes = cipher.DoFinal(ciphertext);
 
 			return decryptedBytes;
 		}
